@@ -17,6 +17,10 @@
 *              This is mainly a wrapper around the existing CDCs.
 */
 module dmi_cdc (
+  // Test controls
+  input  logic             testmode_i,
+  input  logic             test_rst_ni,
+
   // JTAG side (master side)
   input  logic             tck_i,
   input  logic             trst_ni,
@@ -45,70 +49,75 @@ module dmi_cdc (
   input  logic             core_dmi_valid_i
 );
 
-  logic                    core_clear_pending;
 
-  cdc_2phase_clearable #(.T(dm::dmi_req_t)) i_cdc_req (
-    .src_rst_ni  ( trst_ni              ),
-    .src_clear_i ( jtag_dmi_cdc_clear_i ),
-    .src_clk_i   ( tck_i                ),
-    .src_clear_pending_o(), // Not used
-    .src_data_i  ( jtag_dmi_req_i       ),
-    .src_valid_i ( jtag_dmi_valid_i     ),
-    .src_ready_o ( jtag_dmi_ready_o     ),
-
-    .dst_rst_ni  ( rst_ni               ),
-    .dst_clear_i ( 1'b0                 ), // No functional reset from core side
-                                           // used (only async).
-    .dst_clear_pending_o( core_clear_pending ), // use the clear pending signal
-                                                // to synchronously clear the
-                                                // response FIFO in the dm_top
-                                                // csrs
-    .dst_clk_i   ( clk_i                ),
-    .dst_data_o  ( core_dmi_req_o       ),
-    .dst_valid_o ( core_dmi_valid_o     ),
-    .dst_ready_i ( core_dmi_ready_i     )
-  );
-
-  cdc_2phase_clearable #(.T(dm::dmi_resp_t)) i_cdc_resp (
-    .src_rst_ni  ( rst_ni               ),
-    .src_clear_i ( 1'b0                 ), // No functional reset from core side
-                                           // used (only async ).
-    .src_clear_pending_o(), // Not used
-    .src_clk_i   ( clk_i                ),
-    .src_data_i  ( core_dmi_resp_i      ),
-    .src_valid_i ( core_dmi_valid_i     ),
-    .src_ready_o ( core_dmi_ready_o     ),
-
-    .dst_rst_ni  ( trst_ni              ),
-    .dst_clear_i ( jtag_dmi_cdc_clear_i ),
-    .dst_clear_pending_o(), //Not used
-    .dst_clk_i   ( tck_i                ),
-    .dst_data_o  ( jtag_dmi_resp_o      ),
-    .dst_valid_o ( jtag_dmi_valid_o     ),
-    .dst_ready_i ( jtag_dmi_ready_i     )
-  );
-
-  // We need to flush the DMI response FIFO in DM top using the core clock
-  // synchronous clear signal core_dmi_rst_no. We repurpose the clear
-  // pending signal in the core clock domain by generating a 1 cycle pulse from
-  // it.
-
-  logic                    core_clear_pending_q;
-  logic                    core_dmi_rst_nq;
-  logic                    clear_pending_rise_edge_detect;
-
-  assign clear_pending_rise_edge_detect = !core_clear_pending_q && core_clear_pending;
-
-  always_ff @(posedge clk_i, negedge rst_ni) begin
-    if (!rst_ni) begin
-      core_dmi_rst_nq       <= 1'b1;
-      core_clear_pending_q <= 1'b0;
+  logic jtag_combined_rstn;
+  always_ff @(posedge tck_i or negedge trst_ni) begin
+    if (!trst_ni) begin
+      jtag_combined_rstn <= '0;
+    end else if (jtag_dmi_cdc_clear_i) begin
+      jtag_combined_rstn <= '0;
     end else begin
-      core_dmi_rst_nq       <= ~clear_pending_rise_edge_detect; // active-low!
-      core_clear_pending_q <= core_clear_pending;
+      jtag_combined_rstn <= 1'b1;
     end
   end
 
-  assign core_dmi_rst_no = core_dmi_rst_nq;
+  logic combined_rstn_premux;
+  prim_flop_2sync #(
+    .Width(1),
+    .ResetValue(0)
+  ) u_combined_rstn_sync (
+    .clk_i,
+    .rst_ni(rst_ni & jtag_combined_rstn),
+    .d_i(1'b1),
+    .q_o(combined_rstn_premux)
+  );
+
+  logic combined_rstn;
+  prim_clock_mux2 #(
+    .NoFpgaBufG(1'b1)
+  ) u_rst_mux (
+    .clk0_i(combined_rstn_premux),
+    .clk1_i(test_rst_ni),
+    .sel_i(testmode_i),
+    .clk_o(combined_rstn)
+  );
+
+  prim_fifo_async_simple #(
+    .Width($bits(dm::dmi_req_t)),
+    // Use the RZ protocol so that the two sides can be reset independently without getting
+    // out of sync due to EVEN/ODD states.
+    .EnRzHs(1)
+  ) i_cdc_req (
+    .clk_wr_i (tck_i),
+    .rst_wr_ni(trst_ni),
+    .wvalid_i (jtag_dmi_valid_i),
+    .wready_o (jtag_dmi_ready_o),
+    .wdata_i  (jtag_dmi_req_i),
+    .clk_rd_i (clk_i),
+    .rst_rd_ni(combined_rstn),
+    .rvalid_o (core_dmi_valid_o),
+    .rready_i (core_dmi_ready_i),
+    .rdata_o  (core_dmi_req_o)
+  );
+
+  prim_fifo_async_simple #(
+    .Width($bits(dm::dmi_resp_t)),
+    // Use the RZ protocol so that the two sides can be reset independently without getting
+    // out of sync due to EVEN/ODD states.
+    .EnRzHs(1)
+  ) i_cdc_resp (
+    .clk_wr_i (clk_i),
+    .rst_wr_ni(combined_rstn),
+    .wvalid_i (core_dmi_valid_i),
+    .wready_o (core_dmi_ready_o),
+    .wdata_i  (core_dmi_resp_i),
+    .clk_rd_i (tck_i),
+    .rst_rd_ni(trst_ni),
+    .rvalid_o (jtag_dmi_valid_o),
+    .rready_i (jtag_dmi_ready_i),
+    .rdata_o  (jtag_dmi_resp_o)
+  );
+
+  assign core_dmi_rst_no = combined_rstn;
 
 endmodule : dmi_cdc

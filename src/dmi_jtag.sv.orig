@@ -22,10 +22,9 @@ module dmi_jtag #(
   input  logic         clk_i,      // DMI Clock
   input  logic         rst_ni,     // Asynchronous reset active low
   input  logic         testmode_i,
-  input  logic         test_rst_ni,
 
-  // active-low glitch free reset signal. Is asserted
-  // (clk_i) whenever the dmi_jtag is reset.
+  // active-low glitch free reset signal. Is asserted for one dmi clock cycle
+  // (clk_i) whenever the dmi_jtag is reset (POR or functional reset).
   output logic         dmi_rst_no,
   output dm::dmi_req_t dmi_req_o,
   output logic         dmi_req_valid_o,
@@ -329,9 +328,6 @@ module dmi_jtag #(
   // CDC
   // ---------
   dmi_cdc i_dmi_cdc (
-    // Test controls
-    .testmode_i,
-    .test_rst_ni,
     // JTAG side (master side)
     .tck_i                ( tck              ),
     .trst_ni              ( trst_ni          ),

@@ -185,18 +185,15 @@ module dmi_jtag_tap #(
   // ----------------
   // DFT
   // ----------------
-  logic tck_n, tck_ni;
+  logic tck_n;
 
-  tc_clk_inverter i_tck_inv (
-    .clk_i ( tck_i  ),
-    .clk_o ( tck_ni )
-  );
-
-  tc_clk_mux2 i_dft_tck_mux (
-    .clk0_i    ( tck_ni     ),
-    .clk1_i    ( tck_i      ), // bypass the inverted clock for testing
-    .clk_sel_i ( testmode_i ),
-    .clk_o     ( tck_n      )
+  prim_clock_inv #(
+    .HasScanMode(1'b1),
+    .NoFpgaBufG(1'b1)
+  ) i_tck_inv (
+    .clk_i      ( tck_i      ),
+    .clk_no     ( tck_n      ),
+    .scanmode_i ( testmode_i )
   );
 
   // TDO changes state at negative edge of TCK
